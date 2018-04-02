@@ -1,0 +1,20 @@
+{
+  "main":"./index.js",
+  "name":"gqworkerthreads",
+  "description":"gqworkerthreads is a one liner solving the issue of building a server with multithreads in nodejs. This should be ran with nodemon or forever. Note you will need to supply --harmony option.",
+  "version":"0.1.0",
+  "license":"MIT",
+  "dependencies":{
+    "socket.io":"1.2.0",
+    "is-running":"1.0.2",
+    "cluster":"0.7.7",
+    "async":"0.2.6",
+    "underscore":"1.4.3",
+    "now": "0.8.1",
+    "now-middleware": ">=0.0.1",
+    "now-sessions": ">=0.0.1"
+  },
+  "scripts":{
+    "test":"npm install \n node --harmony test/testrun.js"
+  }
+}
