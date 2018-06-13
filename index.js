@@ -4,7 +4,7 @@ var async=require("async");
 var fs=require("fs");
 var _=require("underscore");
 var log={
-    info:util.debug
+    info:console.error
 };
 
 var setting = {};
@@ -21,6 +21,10 @@ setting.nowport=18220;
 
 setting.threads=16;
 
+setting.limit=4;
+
+setting.motd=true;
+
 var oneWeek = 657450000;
 
 var oneDay = 24 * 3600 * 1000;
@@ -29,24 +33,31 @@ var d = new Date();
 
 d.setTime(d.getTime() + oneWeek);
 
+_process=process;
+
 exports.run=function(o,cb) {
 
     o=(o||{})
     o.application= (o.application||function(args){})
     o.setting= o.setting||{}
+    o.cluster= cluster;
     cb=cb||function(e,r){}
 
-    setting=_.extend(setting,o.setting)
+    o.setting=_.extend(setting,o.setting)
+    setting= o.setting;
 
     if (cluster.isMaster) {
 
         var printheader = function (cb) {
-            log.info(fs.readFileSync('res/motd'));
+            log.info(fs.readFileSync('res/motd').toString());
             log.info("!!----------------------------------------------------------!!");
             log.info("        master thread started. PID:" + process.pid);
             log.info("!!----------------------------------------------------------!!");
-            cb();
+            //cb();
         };
+
+        if(o.setting.motd)
+            printheader()
 
         //var ioport = function (cb) {
         //    var io = require('socket.io').listen(setting.ioport);
@@ -96,94 +107,113 @@ exports.run=function(o,cb) {
         //    }
         //};
 
-        var clusterworkers = function (cb) {
-            for (var i = 0; i < setting.threads; i++) {
-                var worker = cluster.fork();
-                worker.on('message', function (msg) {
-                    if (msg == 'SIGQUIT') {
-                        shutDownServer('SIGQUIT');
-                    }
-                })
+
+        cluster.on('death', function (worker) {
+            //cconsole.log('worker ' + worker.pid + ' died');
+            log.info('worker ' + worker.pid + ' died');
+            cluster.fork();
+        });
+
+        cluster.on('exit', function (worker, code, signal) {
+            var exitCode = worker.process.exitCode;
+            if(exitCode==7) {
+                log.info('worker ' + worker.process.pid + ' exited (' + exitCode + ') permanently.');
             }
-
-            process.once('SIGQUIT', function () {
-                log.info('Received SIGQUIT');
-                shutDownServer('SIGQUIT');
-            });
-
-            process.once('SIGHUP', function () {
-                log.info('Received SIGHUP');
-                shutDownServer('SIGHUP');
-            });
-
-            process.once('SIGINT', function () {
-                log.info('Received SIGINT');
-                //sigint = true;
-                process.exit();
-            });
-
-            process.once('SIGUSR2', function () {
-                log.info('Received SIGUSR2');
-                shutDownAllWorker('SIGQUIT');
-            });
-
-            cluster.on('death', function (worker) {
-                //cconsole.log('worker ' + worker.pid + ' died');
-                log.info('worker ' + worker.pid + ' died');
+            else {
+                log.info('worker ' + worker.process.pid + ' exited (' + exitCode + '). Restarting...');
                 cluster.fork();
-            });
-
-            cluster.on('exit', function (worker, code, signal) {
-                var exitCode = worker.process.exitCode;
-                console.log('worker ' + worker.process.pid + ' died (' + exitCode + '). restarting...');
-                cluster.fork();
-            });
-
-            function shutDownServer(sig) {
-                log.info("Closing All Worker Thread");
-                shutDownAllWorker(sig);
-                setTimeout(function () {
-                    log.info("Closing Master");
-                    console.log('Exiting.');
-                    process.exit(0);
-                }, 100);
             }
+        });
 
-            function shutDownAllWorker(sig) {
-                log.info("Closing All Worker Thread");
-                eachWorker(function (worker) {
-                    worker.send({cmd: "stop"});
-                });
+        process.once('SIGQUIT', function () {
+            log.info('Received SIGQUIT');
+            shutDownServer('SIGQUIT');
+        });
+
+        process.once('SIGHUP', function () {
+            log.info('Received SIGHUP');
+            shutDownServer('SIGHUP');
+        });
+
+        process.once('SIGINT', function () {
+            log.info('Received SIGINT');
+            //sigint = true;
+            process.exit();
+        });
+
+        process.once('SIGUSR2', function () {
+            log.info('Received SIGUSR2');
+            shutDownAllWorker('SIGQUIT');
+        });
+
+
+        function shutDownServer(sig) {
+            log.info("Closing All Worker Thread");
+            shutDownAllWorker(sig);
+            setTimeout(function () {
+                log.info("Closing Master");
+                _process.exit(0);
+            }, 100);
+        }
+
+        o.cluster.shutDownServer=shutDownServer;
+
+        function shutDownAllWorker(sig) {
+            log.info("Closing All Worker Thread");
+            eachWorker(function (worker) {
+                worker.send({cmd: "terminate"});
+            });
+        }
+
+        o.cluster.shutDownAllWorker=shutDownAllWorker;
+
+        function restartAllWorker(sig) {
+            log.info("Closing All Worker Thread");
+            eachWorker(function (worker) {
+                worker.send({cmd: "stop"});
+            });
+        }
+
+        o.cluster.restartAllWorker=restartAllWorker;
+
+        function eachWorker(callback) {
+            for (var id in cluster.workers) {
+                callback(cluster.workers[id]);
             }
+        }
 
-            function eachWorker(callback) {
-                for (var id in cluster.workers) {
-                    callback(cluster.workers[id]);
+        o.cluster.eachWorker=eachWorker;
+
+        var arr=_.range(0, o.setting.threads);
+        async.mapLimit(arr,4,function(i,cb){
+            var worker=cluster.fork();
+            worker.on('message', function (msg) {
+                if (msg == 'SIGQUIT') {
+                    shutDownServer('SIGQUIT');
                 }
-            }
-
-            if (setting.checkMaster === true) {
+            });
+            worker.on('online',function(){
+                setTimeout(function(){
+                    cb(null,worker);
+                },100);
+            })
+        },function(e,workers){
+            o.workers=workers
+            o.masterpid=process.pid
+            setTimeout(function(){
+                log.info("All " + o.setting.threads + " threads started successfully.");
+                cb(e,o);
+            },1000);
+            if (o.setting.checkMaster === true) {
                 // update worker master pid
                 setInterval(function () {
                     eachWorker(function (worker) {
                         worker.send({masterpid: process.pid});
                     });
-                }, setting.masterPidUpdatePeriod);
+                }, o.setting.masterPidUpdatePeriod);
             }
+        });
 
-            cb();
-        };
-
-        var callback=function(){
-            cb(null,setting)
-        };
-
-        async.waterfall([
-            printheader,
-            //ioport,
-            //nowport,
-            clusterworkers
-        ]);
 
         //todo: make nowjs working again
 
@@ -193,13 +223,25 @@ exports.run=function(o,cb) {
         var masterpid;
         var running = require('is-running');
 
-        var closeWorker = function () {
+        var closeWorker = function (sig) {
             try {
-                log.info("Closing Worker");
+                sig=sig||0
+                //log.info("Closing Worker");
                 process._channel.close();
                 process._channel.unref();
-                fs.close(0);
-                process.exit();
+                //fs.close(0);
+                process.exit(sig);
+            } catch (e) {
+            }
+        };
+
+        var terminateSingleWorker = function (sig) {
+            try {
+                //log.info("Closing Worker");
+                process._channel.close();
+                process._channel.unref();
+                //fs.close(0);
+                process.exit(sig);
             } catch (e) {
             }
         };
@@ -218,7 +260,10 @@ exports.run=function(o,cb) {
                 numReqs++;
             }
             if (msg.cmd && msg.cmd === 'stop') {
-                closeWorker()
+                closeWorker(0)
+            }
+            if (msg.cmd && msg.cmd === 'terminate') {
+                closeWorker(7)
             }
             if (msg.masterpid) {
                 masterpid = msg.masterpid;
@@ -227,11 +272,11 @@ exports.run=function(o,cb) {
 
         process.on('exit', function (code, signal) {
             if (signal) {
-                log.info("worker was killed by signal: " + signal);
+                log.info("worker ("+cluster.worker.id+") was killed by signal: " + signal);
             } else if (code !== 0) {
-                log.info("worker exited with error code: " + code);
+                log.info("worker ("+cluster.worker.id+") exited with code: " + code);
             } else {
-                log.info("worker exited");
+                //log.info("worker ("+cluster.worker.id+") exited");
             }
         });
 
@@ -242,15 +287,11 @@ exports.run=function(o,cb) {
 
         o.application.call(this, o.arguments);
 
-        log.info("Start thread " + cluster.worker.id + "/"+setting.threads+" with pid "+process.pid+"...");
-        currentthreadcount=setting.currentthreadcount++
-        if (cluster.worker.id >= (setting.threads)) {
-            setTimeout(function(){
-                log.info("All " + setting.threads + " threads started successfully.");
-            },1000)
-        }
+        log.info("Start thread " + cluster.worker.id + "/"+ o.setting.threads+" with pid "+process.pid+"...");
 
-        if (setting.checkMaster === true) {
+        //currentthreadcount=currentthreadcount++
+
+        if (o.setting.checkMaster == true) {
             // check if master thread is alive every 30 seconds
             setInterval(function () {
                 try {
@@ -260,7 +301,7 @@ exports.run=function(o,cb) {
                                 log.info('failed to retrieve master running state');
                             }
                             else {
-                                if (live !== true) {
+                                if (live != true) {
                                     closeWorker();
                                 }
                             }
@@ -268,8 +309,8 @@ exports.run=function(o,cb) {
                     }
                 } catch (e) {
                 }
-            }, setting.checkMasterAlivePeriod);
+            }, o.setting.checkMasterAlivePeriod);
         }
-        cb(null,setting)
+        //cb(null,o)
     }
 };
