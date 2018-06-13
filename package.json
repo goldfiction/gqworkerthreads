@@ -4,7 +4,8 @@
   "description":"gqworkerthreads is a one liner solving the issue of building a server with multithreads in nodejs. This should be ran with nodemon or forever. Note you will need to supply --harmony option. Please read test/test.coffee for sample usage case",
   "version":"0.1.1",
   "license":"MIT",
-  "private":true,
+  "private":false,
+  "repository":"https://github.com/goldfiction/gqworkerthreads.git",
   "dependencies":{
     "is-running":"1.0.2",
     "cluster":"0.7.7",
